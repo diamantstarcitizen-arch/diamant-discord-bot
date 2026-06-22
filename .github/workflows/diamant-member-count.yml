@@ -20,6 +20,19 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install requests
 
+      - name: DEBUG - Server und Kanal-Info abrufen
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+        run: |
+          echo "--- Server, in denen der Bot Mitglied ist ---"
+          curl -s -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+            "https://discord.com/api/v10/users/@me/guilds"
+          echo ""
+          echo "--- Direkte Abfrage der Channel-ID ---"
+          curl -s -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+            "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_ID"
+
       - name: Skript ausführen
         env:
           SC_API_KEY: ${{ secrets.SC_API_KEY }}
