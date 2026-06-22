@@ -29,8 +29,8 @@ CHANNEL_NAME_TEMPLATE = "👥 Mitglieder: {count}"
 
 
 def get_member_count() -> int:
-    url = f"https://api.starcitizen-api.com/{SC_API_KEY}/v1/live/organization/{ORG_SID}"
-    resp = requests.get(url, headers={"Accept": "application/json"}, timeout=15)
+    url = f"https://api.starcitizen-api.com/{SC_API_KEY}/v1/auto/organization/{ORG_SID}"
+    resp = requests.get(url, headers={"Accept": "application/json"}, timeout=30)
     resp.raise_for_status()
     data = resp.json()
     if data.get("success") != 1:
