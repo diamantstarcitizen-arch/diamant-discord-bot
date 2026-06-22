@@ -24,7 +24,7 @@ ORG_SID = "DIAMANT"
 SC_API_KEY = os.environ.get("SC_API_KEY", "")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "")
-CHANNEL_NAME_TEMPLATE = "👥 Mitglieder: {count}"
+CHANNEL_NAME_TEMPLATE = "💎┤Mitglieder: {count}👥"
 # ------------------------------------------------------------------------
 
 
