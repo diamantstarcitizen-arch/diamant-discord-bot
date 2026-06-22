@@ -2,47 +2,40 @@
 """
 DIAMANT Mitgliederzaehler -> Discord Kanalname
 
-Liest die oeffentliche Mitgliederzahl von der RSI-Orgseite
-(robertsspaceindustries.com/en/orgs/diamant) aus und schreibt sie
-in den Namen eines Discord-Kanals (am besten ein Voice-Kanal).
+Liest die Mitgliederzahl der Org DIAMANT ueber die starcitizen-api.com
+ab (statt die RSI-Seite direkt zu scrapen - die blockt Anfragen aus
+Rechenzentrums-IP-Bereichen wie GitHub Actions per Cloudflare) und
+schreibt sie in den Namen eines Discord-Kanals (am besten ein Voice-Kanal).
 
 Gedacht zum Laufen in GitHub Actions (siehe .github/workflows/
-diamant-member-count.yml) - DISCORD_BOT_TOKEN und DISCORD_CHANNEL_ID
-werden dort als Repository Secrets gesetzt und als Umgebungsvariablen
-hereingereicht. Kein eigener Server noetig.
+diamant-member-count.yml) - SC_API_KEY, DISCORD_BOT_TOKEN und
+DISCORD_CHANNEL_ID werden dort als Repository Secrets gesetzt und als
+Umgebungsvariablen hereingereicht. Kein eigener Server noetig.
 """
 
 import os
-import re
 import sys
 import requests
 
 # --- Konfiguration -----------------------------------------------------
-ORG_URL = "https://robertsspaceindustries.com/en/orgs/diamant"
-# Token & Channel-ID kommen aus Umgebungsvariablen (z.B. GitHub Secrets),
-# damit sie nicht im Code/Repo landen.
+ORG_SID = "DIAMANT"
+# API-Key & Discord-Zugangsdaten kommen aus Umgebungsvariablen
+# (z.B. GitHub Secrets), damit sie nicht im Code/Repo landen.
+SC_API_KEY = os.environ.get("SC_API_KEY", "")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "")
 CHANNEL_NAME_TEMPLATE = "👥 Mitglieder: {count}"
 # ------------------------------------------------------------------------
 
-HEADERS_RSI = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) DiamantMemberBot/1.0"
-}
-
 
 def get_member_count() -> int:
-    resp = requests.get(ORG_URL, headers=HEADERS_RSI, timeout=15)
+    url = f"https://api.starcitizen-api.com/{SC_API_KEY}/v1/live/organization/{ORG_SID}"
+    resp = requests.get(url, headers={"Accept": "application/json"}, timeout=15)
     resp.raise_for_status()
-    match = re.search(
-        r'<span class="count">\s*([\d.,]+)\s*members?</span>', resp.text
-    )
-    if not match:
-        raise RuntimeError(
-            "Mitgliederzahl nicht gefunden - hat sich das HTML der RSI-Seite geändert?"
-        )
-    raw = match.group(1).replace(".", "").replace(",", "")
-    return int(raw)
+    data = resp.json()
+    if data.get("success") != 1:
+        raise RuntimeError(f"starcitizen-api.com meldet einen Fehler: {data}")
+    return int(data["data"]["members"])
 
 
 def update_discord_channel(name: str) -> None:
@@ -59,10 +52,18 @@ def update_discord_channel(name: str) -> None:
 
 
 def main() -> int:
-    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
+    missing = [
+        n
+        for n, v in [
+            ("SC_API_KEY", SC_API_KEY),
+            ("DISCORD_BOT_TOKEN", DISCORD_BOT_TOKEN),
+            ("DISCORD_CHANNEL_ID", DISCORD_CHANNEL_ID),
+        ]
+        if not v
+    ]
+    if missing:
         print(
-            "DISCORD_BOT_TOKEN und/oder DISCORD_CHANNEL_ID sind nicht gesetzt. "
-            "Als Umgebungsvariablen bzw. GitHub Secrets hinterlegen.",
+            f"Folgende Umgebungsvariablen/Secrets fehlen: {', '.join(missing)}",
             file=sys.stderr,
         )
         return 1
