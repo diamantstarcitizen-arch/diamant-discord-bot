@@ -48,7 +48,10 @@ def update_discord_channel(name: str) -> None:
     if resp.status_code == 429:
         retry_after = resp.json().get("retry_after", "?")
         raise RuntimeError(f"Discord Rate-Limit erreicht, retry_after={retry_after}s")
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(
+            f"Discord API Fehler {resp.status_code}: {resp.text}"
+        )
 
 
 def main() -> int:
