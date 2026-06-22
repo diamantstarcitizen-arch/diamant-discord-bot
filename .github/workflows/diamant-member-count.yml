@@ -22,6 +22,7 @@ jobs:
 
       - name: Skript ausführen
         env:
+          SC_API_KEY: ${{ secrets.SC_API_KEY }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
         run: python diamant_member_count.py
