@@ -45,6 +45,7 @@ SC_API_KEY = os.environ.get("SC_API_KEY", "")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "")
 WEBHOOK_URL = os.environ.get("DISCORD_MEMBERLIST_WEBHOOK_URL", "")
+CERTIFIED_ROLE_ID = os.environ.get("DISCORD_VERIFIED_ROLE_ID", "")
 
 FUZZY_THRESHOLD = 0.70
 
@@ -132,7 +133,11 @@ def fetch_discord_members() -> list:
                 if n
             ]
             if user.get("id"):
-                members.append({"id": user["id"], "names": names})
+                members.append({
+                    "id": user["id"],
+                    "names": names,
+                    "roles": m.get("roles") or [],
+                })
         after = batch[-1]["user"]["id"]
         if len(batch) < 1000:
             break
@@ -296,6 +301,76 @@ def sync_table_messages(chunks: list, previous_ids: list) -> list:
     return new_ids
 
 
+
+def resolve_manual_discord_ids(manual_nicknames: dict, discord_members: list) -> dict:
+    """Loest manuelle Nickname-Eintraege zu eindeutigen Discord-User-IDs auf.
+    Nur bei GENAU EINEM Treffer wird aufgeloest - sonst Warnung, keine Rolle."""
+    name_index: dict = {}
+    for dm in discord_members:
+        for name in dm["names"]:
+            name_index.setdefault(name.lower(), set()).add(dm["id"])
+
+    resolved = {}
+    for handle, nickname in manual_nicknames.items():
+        ids = name_index.get(nickname.lower())
+        if not ids:
+            print(
+                f"Warnung: Discord-Nickname '{nickname}' (fuer {handle}) aktuell "
+                f"nicht im Server gefunden - Zertifiziert-Rolle wird nicht vergeben.",
+                file=sys.stderr,
+            )
+        elif len(ids) > 1:
+            print(
+                f"Warnung: Discord-Nickname '{nickname}' (fuer {handle}) ist nicht "
+                f"eindeutig ({len(ids)} Treffer) - Zertifiziert-Rolle wird nicht vergeben.",
+                file=sys.stderr,
+            )
+        else:
+            resolved[handle] = next(iter(ids))
+    return resolved
+
+
+def sync_certified_role(resolved_ids: dict, discord_members: list, previous_certified: list) -> list:
+    """Vergibt/entzieht die Zertifiziert-Rolle anhand der aufgeloesten IDs.
+    Gibt die Liste der jetzt zertifizierten Discord-IDs zurueck."""
+    if not CERTIFIED_ROLE_ID:
+        return previous_certified  # Feature nicht konfiguriert, nichts tun
+
+    current_roles = {dm["id"]: set(dm.get("roles") or []) for dm in discord_members}
+    target_ids = set(resolved_ids.values())
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+
+    for discord_id in target_ids:
+        if CERTIFIED_ROLE_ID not in current_roles.get(discord_id, set()):
+            resp = requests.put(
+                f"https://discord.com/api/v10/guilds/{DISCORD_GUILD_ID}"
+                f"/members/{discord_id}/roles/{CERTIFIED_ROLE_ID}",
+                headers=headers, timeout=15,
+            )
+            if not resp.ok:
+                print(
+                    f"Warnung: Rolle konnte nicht vergeben werden ({discord_id}): "
+                    f"{resp.status_code} {resp.text}",
+                    file=sys.stderr,
+                )
+
+    for discord_id in previous_certified:
+        if discord_id not in target_ids:
+            resp = requests.delete(
+                f"https://discord.com/api/v10/guilds/{DISCORD_GUILD_ID}"
+                f"/members/{discord_id}/roles/{CERTIFIED_ROLE_ID}",
+                headers=headers, timeout=15,
+            )
+            if not resp.ok and resp.status_code != 404:
+                print(
+                    f"Warnung: Rolle konnte nicht entzogen werden ({discord_id}): "
+                    f"{resp.status_code} {resp.text}",
+                    file=sys.stderr,
+                )
+
+    return sorted(target_ids)
+
+
 def main() -> int:
     missing = [
         n for n, v in [("SC_API_KEY", SC_API_KEY), ("DISCORD_MEMBERLIST_WEBHOOK_URL", WEBHOOK_URL)]
@@ -329,6 +404,11 @@ def main() -> int:
     left = sorted(previous_handles - current_handles, key=str.lower)
     linked_count = sum(1 for h in rsi_members if h in manual_nicknames or h in suggestions)
 
+    resolved_discord_ids = resolve_manual_discord_ids(manual_nicknames, discord_members)
+    certified_ids = sync_certified_role(
+        resolved_discord_ids, discord_members, state.get("certified_discord_ids", [])
+    )
+
     write_csv_export(rsi_members, manual_nicknames, suggestions)
     embed = build_embed(len(rsi_members), joined, left, linked_count)
 
@@ -355,6 +435,7 @@ def main() -> int:
                 "handles": sorted(current_handles),
                 "summary_message_id": summary_message_id,
                 "table_message_ids": table_message_ids,
+                "certified_discord_ids": certified_ids,
                 "last_updated": datetime.now(timezone.utc).isoformat(),
             },
             f,
