@@ -5,8 +5,12 @@ DIAMANT Mitgliederliste mit Discord-Nickname-Abgleich
 Holt die komplette RSI-Mitgliederliste der Org DIAMANT, vergleicht sie
 mit dem letzten bekannten Stand (neue/ausgetretene Mitglieder), gleicht
 sie optional mit den echten Discord-Servermitgliedern ab (Fuzzy-Match
-auf den Nickname >= 70%) und postet eine Zusammenfassung + CSV-Anhang
-in einen (idealerweise privaten) Discord-Textkanal via Webhook.
+auf den Nickname >= 70%) und postet:
+  1. eine Zusammenfassung (Embed) + vollstaendige CSV als Anhang
+  2. eine oder mehrere Monospace-Tabellen-Nachrichten mit allen
+     RSI<->Discord-Verknuepfungen (manuell oder vorgeschlagen)
+in einen (idealerweise privaten) Discord-Textkanal via Webhook. Alle
+Nachrichten werden bei jedem Lauf bearbeitet statt neu gepostet.
 
 Manuelle Nickname-Zuordnungen: data/manual_nicknames.csv von Hand pflegen
 (Spalten: rsi_handle, discord_nickname). Diese Datei wird von diesem
@@ -15,9 +19,9 @@ Skript nur GELESEN, niemals automatisch ueberschrieben.
 Automatisch generiert/aktualisiert: data/state.json, data/member_list.csv
 
 Benoetigte Secrets (Umgebungsvariablen):
-  SC_API_KEY                      - starcitizen-api.com Key
-  DISCORD_BOT_TOKEN                - fuer das Lesen der Discord-Mitgliederliste
-  DISCORD_GUILD_ID                 - die DIAMANT Server-ID
+  SC_API_KEY                        - starcitizen-api.com Key
+  DISCORD_BOT_TOKEN                 - fuer das Lesen der Discord-Mitgliederliste
+  DISCORD_GUILD_ID                  - die DIAMANT Server-ID
   DISCORD_MEMBERLIST_WEBHOOK_URL    - Webhook des Ziel-Textkanals
 
 Wichtig: Fuer den Discord-Mitgliederabgleich muss im Developer Portal
@@ -49,6 +53,7 @@ STATE_FILE = DATA_DIR / "state.json"
 MANUAL_FILE = DATA_DIR / "manual_nicknames.csv"
 CSV_EXPORT_FILE = DATA_DIR / "member_list.csv"
 MAX_SHOWN_IN_EMBED = 10
+TABLE_CHUNK_MAX_CHARS = 1850  # Sicherheitsabstand zum 2000-Zeichen-Limit
 # --------------------------------------------------------------------------
 
 
@@ -213,33 +218,82 @@ def build_embed(total, joined, left, linked_count) -> dict:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return {
         "title": "📋 DIAMANT Mitgliederliste",
-        "description": f"Stand: {now}\nVollständige Liste im Anhang als CSV.",
+        "description": f"Stand: {now}\nVollständige Liste im Anhang als CSV.\nVerknüpfte Discord-Nicknames in der Tabelle unten ⬇️",
         "color": 0x4DABF7,
         "fields": fields,
     }
 
 
-def post_or_edit_webhook(embed: dict, message_id: str | None) -> str:
-    with open(CSV_EXPORT_FILE, "rb") as f:
-        csv_bytes = f.read()
-    files = {"file": ("diamant_mitglieder.csv", csv_bytes, "text/csv")}
-    data = {"payload_json": json.dumps({"embeds": [embed]})}
+def build_linked_rows(rsi_members: dict, manual_nicknames: dict, suggestions: dict) -> list:
+    rows = []
+    for handle in sorted(rsi_members.keys(), key=str.lower):
+        if handle in manual_nicknames:
+            rows.append((handle, manual_nicknames[handle], "✓ manuell"))
+        elif handle in suggestions:
+            s = suggestions[handle]
+            rows.append((handle, s["name"], f"~{round(s['match'] * 100)}% Vorschlag"))
+    return rows
+
+
+def chunk_table(rows: list) -> list:
+    """Teilt die Tabelle in mehrere Discord-Nachrichten-kompatible Bloecke."""
+    if not rows:
+        return ["_Noch keine Discord-Verknüpfungen vorhanden._"]
+
+    header = f"{'RSI-Handle':<22}{'Discord-Nickname':<24}{'Status'}\n" + "-" * 64 + "\n"
+    chunks = []
+    current = header
+    for handle, nickname, status in rows:
+        line = f"{handle:<22}{nickname:<24}{status}\n"
+        if len(current) + len(line) > TABLE_CHUNK_MAX_CHARS:
+            chunks.append(current)
+            current = header
+        current += line
+    chunks.append(current)
+    return chunks
+
+
+def post_or_edit_message(payload: dict, message_id, files=None):
+    """Postet eine neue Nachricht oder bearbeitet eine bestehende per ID.
+    Gibt die (ggf. neue) Message-ID zurueck."""
+    data = {"payload_json": json.dumps(payload)} if files else None
+    json_body = None if files else payload
 
     if message_id:
         resp = requests.patch(
-            f"{WEBHOOK_URL}/messages/{message_id}", data=data, files=files, timeout=30
+            f"{WEBHOOK_URL}/messages/{message_id}",
+            data=data, json=json_body, files=files, timeout=30,
         )
         if resp.status_code == 404:
-            message_id = None  # alte Nachricht existiert nicht mehr, neu posten
+            message_id = None
         elif not resp.ok:
             raise RuntimeError(f"Discord Webhook Fehler {resp.status_code}: {resp.text}")
         else:
             return message_id
 
-    resp = requests.post(f"{WEBHOOK_URL}?wait=true", data=data, files=files, timeout=30)
+    resp = requests.post(
+        f"{WEBHOOK_URL}?wait=true", data=data, json=json_body, files=files, timeout=30
+    )
     if not resp.ok:
         raise RuntimeError(f"Discord Webhook Fehler {resp.status_code}: {resp.text}")
     return resp.json()["id"]
+
+
+def sync_table_messages(chunks: list, previous_ids: list) -> list:
+    new_ids = []
+    for i, chunk in enumerate(chunks):
+        content = f"```\n{chunk}\n```"
+        existing = previous_ids[i] if i < len(previous_ids) else None
+        msg_id = post_or_edit_message({"content": content}, existing)
+        new_ids.append(msg_id)
+
+    # Ueberzaehlige alte Tabellen-Nachrichten loeschen (Liste ist geschrumpft)
+    for old_id in previous_ids[len(chunks):]:
+        try:
+            requests.delete(f"{WEBHOOK_URL}/messages/{old_id}", timeout=15)
+        except requests.RequestException:
+            pass
+    return new_ids
 
 
 def main() -> int:
@@ -279,7 +333,17 @@ def main() -> int:
     embed = build_embed(len(rsi_members), joined, left, linked_count)
 
     try:
-        message_id = post_or_edit_webhook(embed, state.get("webhook_message_id"))
+        with open(CSV_EXPORT_FILE, "rb") as f:
+            csv_bytes = f.read()
+        summary_message_id = post_or_edit_message(
+            {"embeds": [embed]},
+            state.get("summary_message_id"),
+            files={"file": ("diamant_mitglieder.csv", csv_bytes, "text/csv")},
+        )
+
+        rows = build_linked_rows(rsi_members, manual_nicknames, suggestions)
+        chunks = chunk_table(rows)
+        table_message_ids = sync_table_messages(chunks, state.get("table_message_ids", []))
     except Exception as exc:
         print(f"Fehler beim Posten in Discord: {exc}", file=sys.stderr)
         return 1
@@ -289,7 +353,8 @@ def main() -> int:
         json.dump(
             {
                 "handles": sorted(current_handles),
-                "webhook_message_id": message_id,
+                "summary_message_id": summary_message_id,
+                "table_message_ids": table_message_ids,
                 "last_updated": datetime.now(timezone.utc).isoformat(),
             },
             f,
@@ -299,7 +364,8 @@ def main() -> int:
 
     print(
         f"Fertig: {len(rsi_members)} Mitglieder, {len(joined)} neu, "
-        f"{len(left)} ausgetreten, {linked_count} mit Discord verknüpft."
+        f"{len(left)} ausgetreten, {linked_count} mit Discord verknüpft, "
+        f"{len(table_message_ids)} Tabellen-Nachricht(en)."
     )
     return 0
 
