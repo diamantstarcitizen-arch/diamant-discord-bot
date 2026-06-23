@@ -47,6 +47,7 @@ import difflib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -109,6 +110,8 @@ def fetch_rsi_members() -> dict:
         page += 1
         if page > 60:  # Sicherheitsbremse
             break
+        if len(members) % 300 == 0:
+            time.sleep(3)  # Sicherheitspause alle ~300 Eintraege
     return members
 
 
@@ -237,10 +240,11 @@ def sync_certified_role(resolved_ids: dict, discord_members: list, previous_cert
 
     for discord_id in target_ids:
         if CERTIFIED_ROLE_ID not in current_roles.get(discord_id, set()):
-            resp = requests.put(
+            resp = _request_with_retry(
+                "PUT",
                 f"https://discord.com/api/v10/guilds/{DISCORD_GUILD_ID}"
                 f"/members/{discord_id}/roles/{CERTIFIED_ROLE_ID}",
-                headers=headers, timeout=15,
+                headers=headers,
             )
             if not resp.ok:
                 print(
@@ -248,13 +252,15 @@ def sync_certified_role(resolved_ids: dict, discord_members: list, previous_cert
                     f"{resp.status_code} {resp.text}",
                     file=sys.stderr,
                 )
+            time.sleep(3)
 
     for discord_id in previous_certified:
         if discord_id not in target_ids:
-            resp = requests.delete(
+            resp = _request_with_retry(
+                "DELETE",
                 f"https://discord.com/api/v10/guilds/{DISCORD_GUILD_ID}"
                 f"/members/{discord_id}/roles/{CERTIFIED_ROLE_ID}",
-                headers=headers, timeout=15,
+                headers=headers,
             )
             if not resp.ok and resp.status_code != 404:
                 print(
@@ -262,6 +268,7 @@ def sync_certified_role(resolved_ids: dict, discord_members: list, previous_cert
                     f"{resp.status_code} {resp.text}",
                     file=sys.stderr,
                 )
+            time.sleep(3)
 
     return sorted(target_ids)
 
@@ -343,16 +350,29 @@ def chunk_table(rows: list) -> list:
     return chunks
 
 
+def _request_with_retry(method: str, url: str, max_retries: int = 5, **kwargs):
+    """Fuehrt einen Request aus und wartet/wiederholt automatisch bei 429."""
+    for attempt in range(max_retries):
+        resp = requests.request(method, url, timeout=kwargs.pop("timeout", 30), **kwargs)
+        if resp.status_code == 429:
+            retry_after = resp.json().get("retry_after", 1)
+            time.sleep(retry_after + 0.1)
+            continue
+        return resp
+    return resp  # letzter Versuch, auch wenn wieder 429
+
+
 def post_or_edit_message(payload: dict, message_id, files=None):
     """Postet eine neue Nachricht oder bearbeitet eine bestehende per ID.
-    Gibt die (ggf. neue) Message-ID zurueck."""
+    Gibt die (ggf. neue) Message-ID zurueck. Wartet automatisch bei
+    Rate-Limits (429) statt sofort abzubrechen."""
     data = {"payload_json": json.dumps(payload)} if files else None
     json_body = None if files else payload
 
     if message_id:
-        resp = requests.patch(
-            f"{WEBHOOK_URL}/messages/{message_id}",
-            data=data, json=json_body, files=files, timeout=30,
+        resp = _request_with_retry(
+            "PATCH", f"{WEBHOOK_URL}/messages/{message_id}",
+            data=data, json=json_body, files=files,
         )
         if resp.status_code == 404:
             message_id = None
@@ -361,8 +381,8 @@ def post_or_edit_message(payload: dict, message_id, files=None):
         else:
             return message_id
 
-    resp = requests.post(
-        f"{WEBHOOK_URL}?wait=true", data=data, json=json_body, files=files, timeout=30
+    resp = _request_with_retry(
+        "POST", f"{WEBHOOK_URL}?wait=true", data=data, json=json_body, files=files,
     )
     if not resp.ok:
         raise RuntimeError(f"Discord Webhook Fehler {resp.status_code}: {resp.text}")
@@ -372,16 +392,18 @@ def post_or_edit_message(payload: dict, message_id, files=None):
 def sync_table_messages(chunks: list, previous_ids: list) -> list:
     new_ids = []
     for i, chunk in enumerate(chunks):
-        content = f"```\n{chunk}\n```"
+        chunk_content = f"```\n{chunk}\n```"
         existing = previous_ids[i] if i < len(previous_ids) else None
-        msg_id = post_or_edit_message({"content": content}, existing)
+        msg_id = post_or_edit_message({"content": chunk_content}, existing)
         new_ids.append(msg_id)
+        time.sleep(3)  # Sicherheitsabstand gegen Discord-Rate-Limits
 
     for old_id in previous_ids[len(chunks):]:
         try:
-            requests.delete(f"{WEBHOOK_URL}/messages/{old_id}", timeout=15)
+            _request_with_retry("DELETE", f"{WEBHOOK_URL}/messages/{old_id}")
         except requests.RequestException:
             pass
+        time.sleep(3)
     return new_ids
 
 
