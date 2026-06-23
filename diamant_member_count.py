@@ -24,18 +24,27 @@ ORG_SID = "DIAMANT"
 SC_API_KEY = os.environ.get("SC_API_KEY", "")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "")
-CHANNEL_NAME_TEMPLATE = "💎┤Mitglieder: {count}👥"
+CHANNEL_NAME_TEMPLATE = "👥 Mitglieder: {count}"
 # ------------------------------------------------------------------------
 
 
 def get_member_count() -> int:
-    url = f"https://api.starcitizen-api.com/{SC_API_KEY}/v1/auto/organization/{ORG_SID}"
-    resp = requests.get(url, headers={"Accept": "application/json"}, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("success") != 1:
-        raise RuntimeError(f"starcitizen-api.com meldet einen Fehler: {data}")
-    return int(data["data"]["members"])
+    url = f"https://api.starcitizen-api.com/{SC_API_KEY}/v1/live/organization/{ORG_SID}"
+    last_exc = None
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                url, headers={"Accept": "application/json"}, timeout=45
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("success") != 1:
+                raise RuntimeError(f"starcitizen-api.com meldet einen Fehler: {data}")
+            return int(data["data"]["members"])
+        except requests.exceptions.Timeout as exc:
+            last_exc = exc
+            continue
+    raise last_exc
 
 
 def update_discord_channel(name: str) -> None:
