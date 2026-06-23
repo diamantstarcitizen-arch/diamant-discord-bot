@@ -35,6 +35,6 @@ jobs:
         run: |
           git config user.name "diamant-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add data/state.json data/member_list.csv
+          git add data/state.json data/members.csv
           git diff --staged --quiet || git commit -m "Mitgliederliste aktualisiert"
           git push
