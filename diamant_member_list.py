@@ -12,21 +12,34 @@ auf den Nickname >= 70%) und postet:
 in einen (idealerweise privaten) Discord-Textkanal via Webhook. Alle
 Nachrichten werden bei jedem Lauf bearbeitet statt neu gepostet.
 
-Manuelle Nickname-Zuordnungen: data/manual_nicknames.csv von Hand pflegen
-(Spalten: rsi_handle, discord_nickname). Diese Datei wird von diesem
-Skript nur GELESEN, niemals automatisch ueberschrieben.
+Zusaetzlich: fuer jeden manuell bestaetigten (= eindeutig aufgeloesten)
+Discord-Nickname wird automatisch eine "Zertifiziert"-Rolle vergeben,
+und bei Wegfall der Zuordnung wieder entzogen.
 
-Automatisch generiert/aktualisiert: data/state.json, data/member_list.csv
+ALLES in EINER Datei: data/members.csv
+  Spalten: rsi_handle, display, rank, roles,
+           discord_nickname_manual, discord_nickname_suggested,
+           match_prozent, zertifiziert
+
+  - discord_nickname_manual wird NUR vom Menschen gepflegt (direkt in
+    GitHub editieren). Das Skript liest diese Spalte vor jedem Lauf ein
+    und schreibt sie unveraendert zurueck - sie wird NIE automatisch
+    ueberschrieben.
+  - Alle anderen Spalten werden bei jedem Lauf frisch berechnet.
+
+Automatisch generiert/aktualisiert: data/state.json, data/members.csv
 
 Benoetigte Secrets (Umgebungsvariablen):
   SC_API_KEY                        - starcitizen-api.com Key
   DISCORD_BOT_TOKEN                 - fuer das Lesen der Discord-Mitgliederliste
   DISCORD_GUILD_ID                  - die DIAMANT Server-ID
-  DISCORD_MEMBERLIST_WEBHOOK_URL    - Webhook des Ziel-Textkanals
+  DISCORD_MEMBERLIST_WEBHOOK_URL     - Webhook des Ziel-Textkanals
+  DISCORD_VERIFIED_ROLE_ID           - optional, ID der "Zertifiziert"-Rolle
 
 Wichtig: Fuer den Discord-Mitgliederabgleich muss im Developer Portal
-unter Bot -> "Server Members Intent" aktiviert sein, sonst schlaegt der
-Discord-Teil mit einem Fehler fehl (der RSI-Teil funktioniert trotzdem).
+unter Bot -> "Server Members Intent" aktiviert sein. Fuer die Rollen-
+vergabe braucht der Bot zusaetzlich "Rollen verwalten" und seine eigene
+Rolle muss in der Hierarchie UEBER der Zertifiziert-Rolle stehen.
 """
 
 import csv
@@ -51,10 +64,14 @@ FUZZY_THRESHOLD = 0.70
 
 DATA_DIR = Path("data")
 STATE_FILE = DATA_DIR / "state.json"
-MANUAL_FILE = DATA_DIR / "manual_nicknames.csv"
-CSV_EXPORT_FILE = DATA_DIR / "member_list.csv"
+MEMBERS_FILE = DATA_DIR / "members.csv"
 MAX_SHOWN_IN_EMBED = 10
 TABLE_CHUNK_MAX_CHARS = 1850  # Sicherheitsabstand zum 2000-Zeichen-Limit
+CSV_FIELDS = [
+    "rsi_handle", "display", "rank", "roles",
+    "discord_nickname_manual", "discord_nickname_suggested",
+    "match_prozent", "zertifiziert",
+]
 # --------------------------------------------------------------------------
 
 
@@ -96,7 +113,7 @@ def fetch_rsi_members() -> dict:
 
 
 def fetch_discord_members() -> list:
-    """Alle echten Discord-Servermitglieder mit ihren Anzeigenamen.
+    """Alle echten Discord-Servermitglieder mit Anzeigenamen und Rollen.
 
     Benoetigt die GUILD_MEMBERS privileged intent (Developer Portal).
     Gibt bei fehlender Berechtigung eine leere Liste zurueck (Skript
@@ -144,13 +161,15 @@ def fetch_discord_members() -> list:
     return members
 
 
-def load_manual_nicknames() -> dict:
+def load_previous_manual_nicknames() -> dict:
+    """Liest NUR die manuelle Spalte aus der bestehenden Datei.
+    Wird unveraendert in den naechsten Lauf uebernommen."""
     mapping = {}
-    if MANUAL_FILE.exists():
-        with open(MANUAL_FILE, newline="", encoding="utf-8") as f:
+    if MEMBERS_FILE.exists():
+        with open(MEMBERS_FILE, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 handle = (row.get("rsi_handle") or "").strip()
-                nick = (row.get("discord_nickname") or "").strip()
+                nick = (row.get("discord_nickname_manual") or "").strip()
                 if handle and nick:
                     mapping[handle] = nick
     return mapping
@@ -176,130 +195,6 @@ def best_fuzzy_match(candidates: list, discord_members: list):
     if best and best_ratio >= FUZZY_THRESHOLD:
         return best
     return None
-
-
-def write_csv_export(rsi_members: dict, manual_nicknames: dict, suggestions: dict) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CSV_EXPORT_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            ["rsi_handle", "display", "rank", "roles", "discord_nickname",
-             "discord_match_typ", "discord_match_prozent"]
-        )
-        for handle in sorted(rsi_members.keys(), key=str.lower):
-            info = rsi_members[handle]
-            manual = manual_nicknames.get(handle)
-            suggestion = suggestions.get(handle)
-            if manual:
-                nickname, match_typ, match_pct = manual, "manuell", ""
-            elif suggestion:
-                nickname = suggestion["name"]
-                match_typ = "vorgeschlagen"
-                match_pct = f"{round(suggestion['match'] * 100)}%"
-            else:
-                nickname, match_typ, match_pct = "", "", ""
-            writer.writerow(
-                [handle, info["display"], info["rank"], ";".join(info["roles"]),
-                 nickname, match_typ, match_pct]
-            )
-
-
-def build_embed(total, joined, left, linked_count) -> dict:
-    fields = [
-        {"name": "Gesamt", "value": str(total), "inline": True},
-        {"name": "Mit Discord verknüpft", "value": str(linked_count), "inline": True},
-    ]
-    if joined:
-        shown = ", ".join(joined[:MAX_SHOWN_IN_EMBED])
-        if len(joined) > MAX_SHOWN_IN_EMBED:
-            shown += f" (+{len(joined) - MAX_SHOWN_IN_EMBED} weitere)"
-        fields.append({"name": f"🆕 Neu beigetreten ({len(joined)})", "value": shown, "inline": False})
-    if left:
-        shown = ", ".join(left[:MAX_SHOWN_IN_EMBED])
-        if len(left) > MAX_SHOWN_IN_EMBED:
-            shown += f" (+{len(left) - MAX_SHOWN_IN_EMBED} weitere)"
-        fields.append({"name": f"👋 Ausgetreten ({len(left)})", "value": shown, "inline": False})
-
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    return {
-        "title": "📋 DIAMANT Mitgliederliste",
-        "description": f"Stand: {now}\nVollständige Liste im Anhang als CSV.\nVerknüpfte Discord-Nicknames in der Tabelle unten ⬇️",
-        "color": 0x4DABF7,
-        "fields": fields,
-    }
-
-
-def build_linked_rows(rsi_members: dict, manual_nicknames: dict, suggestions: dict) -> list:
-    rows = []
-    for handle in sorted(rsi_members.keys(), key=str.lower):
-        if handle in manual_nicknames:
-            rows.append((handle, manual_nicknames[handle], "✓ manuell"))
-        elif handle in suggestions:
-            s = suggestions[handle]
-            rows.append((handle, s["name"], f"~{round(s['match'] * 100)}% Vorschlag"))
-    return rows
-
-
-def chunk_table(rows: list) -> list:
-    """Teilt die Tabelle in mehrere Discord-Nachrichten-kompatible Bloecke."""
-    if not rows:
-        return ["_Noch keine Discord-Verknüpfungen vorhanden._"]
-
-    header = f"{'RSI-Handle':<22}{'Discord-Nickname':<24}{'Status'}\n" + "-" * 64 + "\n"
-    chunks = []
-    current = header
-    for handle, nickname, status in rows:
-        line = f"{handle:<22}{nickname:<24}{status}\n"
-        if len(current) + len(line) > TABLE_CHUNK_MAX_CHARS:
-            chunks.append(current)
-            current = header
-        current += line
-    chunks.append(current)
-    return chunks
-
-
-def post_or_edit_message(payload: dict, message_id, files=None):
-    """Postet eine neue Nachricht oder bearbeitet eine bestehende per ID.
-    Gibt die (ggf. neue) Message-ID zurueck."""
-    data = {"payload_json": json.dumps(payload)} if files else None
-    json_body = None if files else payload
-
-    if message_id:
-        resp = requests.patch(
-            f"{WEBHOOK_URL}/messages/{message_id}",
-            data=data, json=json_body, files=files, timeout=30,
-        )
-        if resp.status_code == 404:
-            message_id = None
-        elif not resp.ok:
-            raise RuntimeError(f"Discord Webhook Fehler {resp.status_code}: {resp.text}")
-        else:
-            return message_id
-
-    resp = requests.post(
-        f"{WEBHOOK_URL}?wait=true", data=data, json=json_body, files=files, timeout=30
-    )
-    if not resp.ok:
-        raise RuntimeError(f"Discord Webhook Fehler {resp.status_code}: {resp.text}")
-    return resp.json()["id"]
-
-
-def sync_table_messages(chunks: list, previous_ids: list) -> list:
-    new_ids = []
-    for i, chunk in enumerate(chunks):
-        content = f"```\n{chunk}\n```"
-        existing = previous_ids[i] if i < len(previous_ids) else None
-        msg_id = post_or_edit_message({"content": content}, existing)
-        new_ids.append(msg_id)
-
-    # Ueberzaehlige alte Tabellen-Nachrichten loeschen (Liste ist geschrumpft)
-    for old_id in previous_ids[len(chunks):]:
-        try:
-            requests.delete(f"{WEBHOOK_URL}/messages/{old_id}", timeout=15)
-        except requests.RequestException:
-            pass
-    return new_ids
-
 
 
 def resolve_manual_discord_ids(manual_nicknames: dict, discord_members: list) -> dict:
@@ -371,6 +266,125 @@ def sync_certified_role(resolved_ids: dict, discord_members: list, previous_cert
     return sorted(target_ids)
 
 
+def write_members_csv(rsi_members: dict, manual_nicknames: dict, suggestions: dict,
+                       resolved_discord_ids: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(MEMBERS_FILE, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(CSV_FIELDS)
+        for handle in sorted(rsi_members.keys(), key=str.lower):
+            info = rsi_members[handle]
+            manual = manual_nicknames.get(handle, "")
+            suggestion = suggestions.get(handle)
+            suggested_name = suggestion["name"] if suggestion else ""
+            match_pct = f"{round(suggestion['match'] * 100)}%" if suggestion else ""
+            zertifiziert = "✓" if handle in resolved_discord_ids else ""
+            writer.writerow([
+                handle, info["display"], info["rank"], ";".join(info["roles"]),
+                manual, suggested_name, match_pct, zertifiziert,
+            ])
+
+
+def build_embed(total, joined, left, linked_count) -> dict:
+    fields = [
+        {"name": "Gesamt", "value": str(total), "inline": True},
+        {"name": "Mit Discord verknüpft", "value": str(linked_count), "inline": True},
+    ]
+    if joined:
+        shown = ", ".join(joined[:MAX_SHOWN_IN_EMBED])
+        if len(joined) > MAX_SHOWN_IN_EMBED:
+            shown += f" (+{len(joined) - MAX_SHOWN_IN_EMBED} weitere)"
+        fields.append({"name": f"🆕 Neu beigetreten ({len(joined)})", "value": shown, "inline": False})
+    if left:
+        shown = ", ".join(left[:MAX_SHOWN_IN_EMBED])
+        if len(left) > MAX_SHOWN_IN_EMBED:
+            shown += f" (+{len(left) - MAX_SHOWN_IN_EMBED} weitere)"
+        fields.append({"name": f"👋 Ausgetreten ({len(left)})", "value": shown, "inline": False})
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return {
+        "title": "📋 DIAMANT Mitgliederliste",
+        "description": (
+            f"Stand: {now}\nVollständige Liste im Anhang als CSV "
+            f"(manuelle + vorgeschlagene Discord-Nicknames nebeneinander).\n"
+            f"Verknüpfte Discord-Nicknames in der Tabelle unten ⬇️"
+        ),
+        "color": 0x4DABF7,
+        "fields": fields,
+    }
+
+
+def build_linked_rows(rsi_members: dict, manual_nicknames: dict, suggestions: dict) -> list:
+    rows = []
+    for handle in sorted(rsi_members.keys(), key=str.lower):
+        if handle in manual_nicknames:
+            rows.append((handle, manual_nicknames[handle], "✓ manuell"))
+        elif handle in suggestions:
+            s = suggestions[handle]
+            rows.append((handle, s["name"], f"~{round(s['match'] * 100)}% Vorschlag"))
+    return rows
+
+
+def chunk_table(rows: list) -> list:
+    """Teilt die Tabelle in mehrere Discord-Nachrichten-kompatible Bloecke."""
+    if not rows:
+        return ["_Noch keine Discord-Verknüpfungen vorhanden._"]
+
+    header = f"{'RSI-Handle':<22}{'Discord-Nickname':<24}{'Status'}\n" + "-" * 64 + "\n"
+    chunks = []
+    current = header
+    for handle, nickname, status in rows:
+        line = f"{handle:<22}{nickname:<24}{status}\n"
+        if len(current) + len(line) > TABLE_CHUNK_MAX_CHARS:
+            chunks.append(current)
+            current = header
+        current += line
+    chunks.append(current)
+    return chunks
+
+
+def post_or_edit_message(payload: dict, message_id, files=None):
+    """Postet eine neue Nachricht oder bearbeitet eine bestehende per ID.
+    Gibt die (ggf. neue) Message-ID zurueck."""
+    data = {"payload_json": json.dumps(payload)} if files else None
+    json_body = None if files else payload
+
+    if message_id:
+        resp = requests.patch(
+            f"{WEBHOOK_URL}/messages/{message_id}",
+            data=data, json=json_body, files=files, timeout=30,
+        )
+        if resp.status_code == 404:
+            message_id = None
+        elif not resp.ok:
+            raise RuntimeError(f"Discord Webhook Fehler {resp.status_code}: {resp.text}")
+        else:
+            return message_id
+
+    resp = requests.post(
+        f"{WEBHOOK_URL}?wait=true", data=data, json=json_body, files=files, timeout=30
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Discord Webhook Fehler {resp.status_code}: {resp.text}")
+    return resp.json()["id"]
+
+
+def sync_table_messages(chunks: list, previous_ids: list) -> list:
+    new_ids = []
+    for i, chunk in enumerate(chunks):
+        content = f"```\n{chunk}\n```"
+        existing = previous_ids[i] if i < len(previous_ids) else None
+        msg_id = post_or_edit_message({"content": content}, existing)
+        new_ids.append(msg_id)
+
+    for old_id in previous_ids[len(chunks):]:
+        try:
+            requests.delete(f"{WEBHOOK_URL}/messages/{old_id}", timeout=15)
+        except requests.RequestException:
+            pass
+    return new_ids
+
+
 def main() -> int:
     missing = [
         n for n, v in [("SC_API_KEY", SC_API_KEY), ("DISCORD_MEMBERLIST_WEBHOOK_URL", WEBHOOK_URL)]
@@ -380,6 +394,8 @@ def main() -> int:
         print(f"Folgende Secrets fehlen: {', '.join(missing)}", file=sys.stderr)
         return 1
 
+    manual_nicknames = load_previous_manual_nicknames()
+
     try:
         rsi_members = fetch_rsi_members()
     except Exception as exc:
@@ -387,7 +403,6 @@ def main() -> int:
         return 1
 
     discord_members = fetch_discord_members()
-    manual_nicknames = load_manual_nicknames()
 
     suggestions = {}
     for handle, info in rsi_members.items():
@@ -409,11 +424,11 @@ def main() -> int:
         resolved_discord_ids, discord_members, state.get("certified_discord_ids", [])
     )
 
-    write_csv_export(rsi_members, manual_nicknames, suggestions)
+    write_members_csv(rsi_members, manual_nicknames, suggestions, resolved_discord_ids)
     embed = build_embed(len(rsi_members), joined, left, linked_count)
 
     try:
-        with open(CSV_EXPORT_FILE, "rb") as f:
+        with open(MEMBERS_FILE, "rb") as f:
             csv_bytes = f.read()
         summary_message_id = post_or_edit_message(
             {"embeds": [embed]},
@@ -446,7 +461,7 @@ def main() -> int:
     print(
         f"Fertig: {len(rsi_members)} Mitglieder, {len(joined)} neu, "
         f"{len(left)} ausgetreten, {linked_count} mit Discord verknüpft, "
-        f"{len(table_message_ids)} Tabellen-Nachricht(en)."
+        f"{len(certified_ids)} zertifiziert, {len(table_message_ids)} Tabellen-Nachricht(en)."
     )
     return 0
 
