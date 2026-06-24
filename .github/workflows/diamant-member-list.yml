@@ -23,6 +23,24 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install requests
 
+      - name: DEBUG - Rollen und Bot-Berechtigungen prüfen
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_GUILD_ID: ${{ secrets.DISCORD_GUILD_ID }}
+          DISCORD_VERIFIED_ROLE_ID: ${{ secrets.DISCORD_VERIFIED_ROLE_ID }}
+        run: |
+          echo "--- Alle Rollen im Server (id, name, position, permissions) ---"
+          curl -s -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+            "https://discord.com/api/v10/guilds/$DISCORD_GUILD_ID/roles" \
+            | python3 -c "import sys,json; [print(r['id'], '|', r['name'], '| pos:', r['position'], '| perms:', r['permissions']) for r in json.load(sys.stdin)]"
+          echo ""
+          echo "--- Bot selbst (eigene Rollen-IDs) ---"
+          curl -s -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+            "https://discord.com/api/v10/guilds/$DISCORD_GUILD_ID/members/@me"
+          echo ""
+          echo "--- Ziel-Rolle (DISCORD_VERIFIED_ROLE_ID) ---"
+          echo "$DISCORD_VERIFIED_ROLE_ID"
+
       - name: Liste erstellen und posten
         env:
           SC_API_KEY: ${{ secrets.SC_API_KEY }}
