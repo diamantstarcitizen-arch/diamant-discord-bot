@@ -110,9 +110,23 @@ def fetch_rsi_members() -> dict:
         page += 1
         if page > 60:  # Sicherheitsbremse
             break
+        time.sleep(1)  # kleine Pause nach JEDER Seite (gegen RSI-Blocks)
         if len(members) % 300 == 0:
-            time.sleep(3)  # Sicherheitspause alle ~300 Eintraege
+            time.sleep(3)  # zusaetzliche Sicherheitspause alle ~300 Eintraege
     return members
+
+
+def fetch_org_total_count() -> int:
+    """Holt die offizielle Gesamtmitgliederzahl zur Plausibilitaetskontrolle
+    (separat von der paginierten Liste, gleicher Endpunkt wie der
+    stuendliche Mitgliederzaehler)."""
+    url = f"https://api.starcitizen-api.com/{SC_API_KEY}/v1/live/organization/{ORG_SID}"
+    resp = requests.get(url, headers={"Accept": "application/json"}, timeout=45)
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("success") != 1:
+        raise RuntimeError(f"starcitizen-api.com meldet einen Fehler: {data}")
+    return int(data["data"]["members"])
 
 
 def fetch_discord_members() -> list:
@@ -434,6 +448,23 @@ def main() -> int:
         rsi_members = fetch_rsi_members()
     except Exception as exc:
         print(f"Fehler beim Abrufen der RSI-Mitgliederliste: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        reported_total = fetch_org_total_count()
+    except Exception as exc:
+        print(f"Warnung: Gesamtzahl zur Kontrolle nicht abrufbar: {exc}", file=sys.stderr)
+        reported_total = None
+
+    if reported_total is not None and len(rsi_members) < reported_total - 5:
+        print(
+            f"Fehler: Nur {len(rsi_members)} von offiziell {reported_total} "
+            f"Mitgliedern abgerufen - vermutlich ein unvollstaendiger Abruf "
+            f"(z.B. RSI hat zwischendurch geblockt). Breche ab, OHNE etwas zu "
+            f"speichern oder zu posten, um falsche 'Ausgetreten'-Meldungen zu "
+            f"vermeiden. Bitte den Lauf einfach erneut starten.",
+            file=sys.stderr,
+        )
         return 1
 
     discord_members = fetch_discord_members()
