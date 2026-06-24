@@ -164,17 +164,29 @@ def fetch_discord_members() -> list:
     return members
 
 
+def _read_text_robust(path: Path) -> str:
+    """Liest eine Textdatei robust ein, auch wenn sie z.B. von Excel
+    versehentlich in Windows-1252/ANSI statt UTF-8 gespeichert wurde."""
+    raw = path.read_bytes()
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def load_previous_manual_nicknames() -> dict:
     """Liest NUR die manuelle Spalte aus der bestehenden Datei.
     Wird unveraendert in den naechsten Lauf uebernommen."""
     mapping = {}
     if MEMBERS_FILE.exists():
-        with open(MEMBERS_FILE, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                handle = (row.get("rsi_handle") or "").strip()
-                nick = (row.get("discord_nickname_manual") or "").strip()
-                if handle and nick:
-                    mapping[handle] = nick
+        text = _read_text_robust(MEMBERS_FILE)
+        for row in csv.DictReader(text.splitlines(), delimiter=";"):
+            handle = (row.get("rsi_handle") or "").strip()
+            nick = (row.get("discord_nickname_manual") or "").strip()
+            if handle and nick:
+                mapping[handle] = nick
     return mapping
 
 
@@ -276,8 +288,8 @@ def sync_certified_role(resolved_ids: dict, discord_members: list, previous_cert
 def write_members_csv(rsi_members: dict, manual_nicknames: dict, suggestions: dict,
                        resolved_discord_ids: dict) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(MEMBERS_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+    with open(MEMBERS_FILE, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f, delimiter=";")
         writer.writerow(CSV_FIELDS)
         for handle in sorted(rsi_members.keys(), key=str.lower):
             info = rsi_members[handle]
