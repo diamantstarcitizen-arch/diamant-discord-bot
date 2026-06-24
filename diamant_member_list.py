@@ -318,11 +318,20 @@ def write_members_csv(rsi_members: dict, manual_nicknames: dict, suggestions: di
             ])
 
 
-def build_embed(total, joined, left, linked_count) -> dict:
+def build_embed(total, joined, left, linked_count, reported_total=None) -> dict:
     fields = [
-        {"name": "Gesamt", "value": str(total), "inline": True},
+        {"name": "Gesamt (öffentlich sichtbar)", "value": str(total), "inline": True},
         {"name": "Mit Discord verknüpft", "value": str(linked_count), "inline": True},
     ]
+    if reported_total is not None and reported_total > total:
+        hidden = reported_total - total
+        fields.append({
+            "name": "Hinweis",
+            "value": f"{hidden} weitere Mitglieder haben ihre Org-Zugehörigkeit "
+                     f"privat gestellt (offiziell {reported_total} gesamt) und "
+                     f"erscheinen nie in dieser Liste.",
+            "inline": False,
+        })
     if joined:
         shown = ", ".join(joined[:MAX_SHOWN_IN_EMBED])
         if len(joined) > MAX_SHOWN_IN_EMBED:
@@ -450,19 +459,28 @@ def main() -> int:
         print(f"Fehler beim Abrufen der RSI-Mitgliederliste: {exc}", file=sys.stderr)
         return 1
 
+    # Offizielle Gesamtzahl ist NUR zur Information gedacht (Org-Mitglieder
+    # koennen ihre Zugehoerigkeit privat stellen - die erscheinen NIE in der
+    # paginierten Liste, das ist eine dauerhafte RSI-Eigenheit, kein Fehler).
     try:
         reported_total = fetch_org_total_count()
     except Exception as exc:
-        print(f"Warnung: Gesamtzahl zur Kontrolle nicht abrufbar: {exc}", file=sys.stderr)
+        print(f"Warnung: Gesamtzahl zur Information nicht abrufbar: {exc}", file=sys.stderr)
         reported_total = None
 
-    if reported_total is not None and len(rsi_members) < reported_total - 5:
+    # Plausibilitaetscheck stattdessen gegen den letzten ERFOLGREICHEN Lauf:
+    # ein ploetzlicher starker Einbruch (z.B. RSI hat den Abruf zwischendurch
+    # geblockt) faellt damit auf, ohne durch die strukturelle Luecke zur
+    # offiziellen Gesamtzahl falsch auszuloesen.
+    previous_state_for_check = load_state()
+    previous_count = len(previous_state_for_check.get("handles", []))
+    if previous_count > 0 and len(rsi_members) < previous_count * 0.90:
         print(
-            f"Fehler: Nur {len(rsi_members)} von offiziell {reported_total} "
-            f"Mitgliedern abgerufen - vermutlich ein unvollstaendiger Abruf "
-            f"(z.B. RSI hat zwischendurch geblockt). Breche ab, OHNE etwas zu "
-            f"speichern oder zu posten, um falsche 'Ausgetreten'-Meldungen zu "
-            f"vermeiden. Bitte den Lauf einfach erneut starten.",
+            f"Fehler: Nur {len(rsi_members)} Mitglieder abgerufen, letzter "
+            f"erfolgreicher Lauf hatte {previous_count} (>10% Einbruch). "
+            f"Vermutlich ein unvollstaendiger Abruf (RSI hat zwischendurch "
+            f"geblockt). Breche ab, OHNE etwas zu speichern oder zu posten. "
+            f"Bitte den Lauf einfach erneut starten.",
             file=sys.stderr,
         )
         return 1
@@ -490,7 +508,7 @@ def main() -> int:
     )
 
     write_members_csv(rsi_members, manual_nicknames, suggestions, resolved_discord_ids)
-    embed = build_embed(len(rsi_members), joined, left, linked_count)
+    embed = build_embed(len(rsi_members), joined, left, linked_count, reported_total)
 
     try:
         with open(MEMBERS_FILE, "rb") as f:
