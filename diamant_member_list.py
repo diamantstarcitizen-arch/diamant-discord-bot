@@ -256,29 +256,41 @@ def resolve_manual_discord_ids(manual_nicknames: dict, discord_members: list) ->
 
 def sync_certified_role(resolved_ids: dict, discord_members: list, previous_certified: list) -> list:
     """Vergibt/entzieht die Zertifiziert-Rolle anhand der aufgeloesten IDs.
-    Gibt die Liste der jetzt zertifizierten Discord-IDs zurueck."""
+    Gibt NUR die Discord-IDs zurueck, die die Rolle TATSAECHLICH (jetzt
+    bestaetigt) tragen - nicht bloss "Name war eindeutig aufloesbar"."""
     if not CERTIFIED_ROLE_ID:
+        if resolved_ids:
+            print(
+                "Warnung: DISCORD_VERIFIED_ROLE_ID ist nicht gesetzt - "
+                "Zertifiziert-Rolle wird nicht vergeben/geprueft.",
+                file=sys.stderr,
+            )
         return previous_certified  # Feature nicht konfiguriert, nichts tun
 
     current_roles = {dm["id"]: set(dm.get("roles") or []) for dm in discord_members}
     target_ids = set(resolved_ids.values())
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    actually_certified = set()
 
     for discord_id in target_ids:
-        if CERTIFIED_ROLE_ID not in current_roles.get(discord_id, set()):
-            resp = _request_with_retry(
-                "PUT",
-                f"https://discord.com/api/v10/guilds/{DISCORD_GUILD_ID}"
-                f"/members/{discord_id}/roles/{CERTIFIED_ROLE_ID}",
-                headers=headers,
+        if CERTIFIED_ROLE_ID in current_roles.get(discord_id, set()):
+            actually_certified.add(discord_id)
+            continue
+        resp = _request_with_retry(
+            "PUT",
+            f"https://discord.com/api/v10/guilds/{DISCORD_GUILD_ID}"
+            f"/members/{discord_id}/roles/{CERTIFIED_ROLE_ID}",
+            headers=headers,
+        )
+        if resp.ok:
+            actually_certified.add(discord_id)
+        else:
+            print(
+                f"Warnung: Rolle konnte nicht vergeben werden ({discord_id}): "
+                f"{resp.status_code} {resp.text}",
+                file=sys.stderr,
             )
-            if not resp.ok:
-                print(
-                    f"Warnung: Rolle konnte nicht vergeben werden ({discord_id}): "
-                    f"{resp.status_code} {resp.text}",
-                    file=sys.stderr,
-                )
-            time.sleep(3)
+        time.sleep(3)
 
     for discord_id in previous_certified:
         if discord_id not in target_ids:
@@ -296,12 +308,13 @@ def sync_certified_role(resolved_ids: dict, discord_members: list, previous_cert
                 )
             time.sleep(3)
 
-    return sorted(target_ids)
+    return sorted(actually_certified)
 
 
 def write_members_csv(rsi_members: dict, manual_nicknames: dict, suggestions: dict,
-                       resolved_discord_ids: dict) -> None:
+                       resolved_discord_ids: dict, certified_ids: list) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    certified_set = set(certified_ids)
     with open(MEMBERS_FILE, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f, delimiter=";")
         writer.writerow(CSV_FIELDS)
@@ -311,7 +324,7 @@ def write_members_csv(rsi_members: dict, manual_nicknames: dict, suggestions: di
             suggestion = suggestions.get(handle)
             suggested_name = suggestion["name"] if suggestion else ""
             match_pct = f"{round(suggestion['match'] * 100)}%" if suggestion else ""
-            zertifiziert = "✓" if handle in resolved_discord_ids else ""
+            zertifiziert = "✓" if resolved_discord_ids.get(handle) in certified_set else ""
             writer.writerow([
                 handle, info["display"], info["rank"], ";".join(info["roles"]),
                 manual, suggested_name, match_pct, zertifiziert,
@@ -507,7 +520,7 @@ def main() -> int:
         resolved_discord_ids, discord_members, state.get("certified_discord_ids", [])
     )
 
-    write_members_csv(rsi_members, manual_nicknames, suggestions, resolved_discord_ids)
+    write_members_csv(rsi_members, manual_nicknames, suggestions, resolved_discord_ids, certified_ids)
     embed = build_embed(len(rsi_members), joined, left, linked_count, reported_total)
 
     try:
