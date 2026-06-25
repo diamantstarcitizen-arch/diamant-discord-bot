@@ -61,7 +61,12 @@ DISCORD_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "")
 WEBHOOK_URL = os.environ.get("DISCORD_MEMBERLIST_WEBHOOK_URL", "")
 CERTIFIED_ROLE_ID = os.environ.get("DISCORD_VERIFIED_ROLE_ID", "")
 
-FUZZY_THRESHOLD = 0.70
+FUZZY_THRESHOLD = 0.60
+
+
+def round_to_5(ratio: float) -> int:
+    """Rundet einen Match-Anteil (0.0-1.0) auf die naechsten 5 Prozentpunkte."""
+    return round(ratio * 100 / 5) * 5
 
 DATA_DIR = Path("data")
 STATE_FILE = DATA_DIR / "state.json"
@@ -323,7 +328,7 @@ def write_members_csv(rsi_members: dict, manual_nicknames: dict, suggestions: di
             manual = manual_nicknames.get(handle, "")
             suggestion = suggestions.get(handle)
             suggested_name = suggestion["name"] if suggestion else ""
-            match_pct = f"{round(suggestion['match'] * 100)}%" if suggestion else ""
+            match_pct = f"{round_to_5(suggestion['match'])}%" if suggestion else ""
             zertifiziert = "✓" if resolved_discord_ids.get(handle) in certified_set else ""
             writer.writerow([
                 handle, info["display"], info["rank"], ";".join(info["roles"]),
@@ -381,7 +386,7 @@ def build_linked_rows(rsi_members: dict, manual_nicknames: dict, suggestions: di
             continue  # schon geklaert - nicht mehr "offen"
         if handle in suggestions:
             s = suggestions[handle]
-            rows.append((handle, s["name"], f"~{round(s['match'] * 100)}% Vorschlag"))
+            rows.append((handle, s["name"], f"~{round_to_5(s['match'])}% Vorschlag"))
     return rows
 
 
