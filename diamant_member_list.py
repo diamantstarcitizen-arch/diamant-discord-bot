@@ -331,10 +331,11 @@ def write_members_csv(rsi_members: dict, manual_nicknames: dict, suggestions: di
             ])
 
 
-def build_embed(total, joined, left, linked_count, reported_total=None) -> dict:
+def build_embed(total, joined, left, linked_count, open_count, reported_total=None) -> dict:
     fields = [
         {"name": "Gesamt (öffentlich sichtbar)", "value": str(total), "inline": True},
         {"name": "Mit Discord verknüpft", "value": str(linked_count), "inline": True},
+        {"name": "📝 Noch offen (unbestätigt)", "value": str(open_count), "inline": True},
     ]
     if reported_total is not None and reported_total > total:
         hidden = reported_total - total
@@ -362,7 +363,7 @@ def build_embed(total, joined, left, linked_count, reported_total=None) -> dict:
         "description": (
             f"Stand: {now}\nVollständige Liste im Anhang als CSV "
             f"(manuelle + vorgeschlagene Discord-Nicknames nebeneinander).\n"
-            f"Verknüpfte Discord-Nicknames in der Tabelle unten ⬇️"
+            f"Noch offene Vorschläge (unbestätigt) in der Tabelle unten ⬇️"
         ),
         "color": 0x4DABF7,
         "fields": fields,
@@ -370,11 +371,15 @@ def build_embed(total, joined, left, linked_count, reported_total=None) -> dict:
 
 
 def build_linked_rows(rsi_members: dict, manual_nicknames: dict, suggestions: dict) -> list:
+    """Nur OFFENE Vorschlaege - bereits manuell bestaetigte Mitglieder
+    werden hier ausgeblendet (stehen weiterhin in der CSV), damit die
+    Discord-Tabelle sich auf das fokussiert, was noch eine Entscheidung
+    braucht."""
     rows = []
     for handle in sorted(rsi_members.keys(), key=str.lower):
         if handle in manual_nicknames:
-            rows.append((handle, manual_nicknames[handle], "✓ manuell"))
-        elif handle in suggestions:
+            continue  # schon geklaert - nicht mehr "offen"
+        if handle in suggestions:
             s = suggestions[handle]
             rows.append((handle, s["name"], f"~{round(s['match'] * 100)}% Vorschlag"))
     return rows
@@ -521,7 +526,8 @@ def main() -> int:
     )
 
     write_members_csv(rsi_members, manual_nicknames, suggestions, resolved_discord_ids, certified_ids)
-    embed = build_embed(len(rsi_members), joined, left, linked_count, reported_total)
+    rows = build_linked_rows(rsi_members, manual_nicknames, suggestions)
+    embed = build_embed(len(rsi_members), joined, left, linked_count, len(rows), reported_total)
 
     try:
         with open(MEMBERS_FILE, "rb") as f:
@@ -532,7 +538,6 @@ def main() -> int:
             files={"file": ("diamant_mitglieder.csv", csv_bytes, "text/csv")},
         )
 
-        rows = build_linked_rows(rsi_members, manual_nicknames, suggestions)
         chunks = chunk_table(rows)
         table_message_ids = sync_table_messages(chunks, state.get("table_message_ids", []))
     except Exception as exc:
