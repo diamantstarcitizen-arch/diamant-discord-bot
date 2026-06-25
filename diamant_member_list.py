@@ -510,11 +510,18 @@ def main() -> int:
 
     discord_members = fetch_discord_members()
 
+    # Discord-Konten, die schon eindeutig manuell zugeordnet sind, fliegen
+    # aus dem Vorschlagspool - derselbe Discord-Account soll nicht gleichzeitig
+    # als Vorschlag fuer einen ANDEREN RSI-Handle auftauchen.
+    resolved_discord_ids = resolve_manual_discord_ids(manual_nicknames, discord_members)
+    claimed_ids = set(resolved_discord_ids.values())
+    unclaimed_discord_members = [dm for dm in discord_members if dm["id"] not in claimed_ids]
+
     suggestions = {}
     for handle, info in rsi_members.items():
         if handle in manual_nicknames:
             continue
-        match = best_fuzzy_match([handle, info["display"]], discord_members)
+        match = best_fuzzy_match([handle, info["display"]], unclaimed_discord_members)
         if match:
             suggestions[handle] = match
 
@@ -525,7 +532,6 @@ def main() -> int:
     left = sorted(previous_handles - current_handles, key=str.lower)
     linked_count = sum(1 for h in rsi_members if h in manual_nicknames or h in suggestions)
 
-    resolved_discord_ids = resolve_manual_discord_ids(manual_nicknames, discord_members)
     certified_ids = sync_certified_role(
         resolved_discord_ids, discord_members, state.get("certified_discord_ids", [])
     )
