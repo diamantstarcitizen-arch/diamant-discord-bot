@@ -366,8 +366,7 @@ def build_embed(total, joined, left, linked_count, open_count, reported_total=No
     return {
         "title": "📋 DIAMANT Mitgliederliste",
         "description": (
-            f"Stand: {now}\nVollständige Liste im Anhang als CSV "
-            f"(manuelle + vorgeschlagene Discord-Nicknames nebeneinander).\n"
+            f"Stand: {now}\nVollständige Liste in `data/members.csv` im Repo.\n"
             f"Noch offene Vorschläge (unbestätigt) in der Tabelle unten ⬇️"
         ),
         "color": 0x4DABF7,
@@ -541,12 +540,9 @@ def main() -> int:
     embed = build_embed(len(rsi_members), joined, left, linked_count, len(rows), reported_total)
 
     try:
-        with open(MEMBERS_FILE, "rb") as f:
-            csv_bytes = f.read()
         summary_message_id = post_or_edit_message(
             {"embeds": [embed]},
             state.get("summary_message_id"),
-            files={"file": ("diamant_mitglieder.csv", csv_bytes, "text/csv")},
         )
 
         chunks = chunk_table(rows)
