@@ -71,6 +71,7 @@ def round_to_5(ratio: float) -> int:
 DATA_DIR = Path("data")
 STATE_FILE = DATA_DIR / "state.json"
 MEMBERS_FILE = DATA_DIR / "members.csv"
+HIDDEN_MEMBERS_FILE = DATA_DIR / "hidden_members.csv"
 MAX_SHOWN_IN_EMBED = 10
 TABLE_CHUNK_MAX_CHARS = 1850  # Sicherheitsabstand zum 2000-Zeichen-Limit
 CSV_FIELDS = [
@@ -207,6 +208,29 @@ def load_previous_manual_nicknames() -> dict:
             if handle and nick:
                 mapping[handle] = nick
     return mapping
+
+
+def load_hidden_members() -> tuple:
+    """Liest data/hidden_members.csv - von Hand gepflegte Liste fuer
+    Mitglieder, die ihre Org-Zugehoerigkeit auf RSI privat gestellt haben
+    und daher NIE in der live abgerufenen Liste auftauchen. Wird vom
+    Skript nur GELESEN, nie automatisch ueberschrieben.
+
+    Gibt (info_dict, manual_nicknames_dict) zurueck."""
+    info = {}
+    manual = {}
+    if HIDDEN_MEMBERS_FILE.exists():
+        text = _read_text_robust(HIDDEN_MEMBERS_FILE)
+        for row in csv.DictReader(text.splitlines(), delimiter=";"):
+            handle = (row.get("rsi_handle") or "").strip()
+            if not handle:
+                continue
+            display = (row.get("display") or handle).strip()
+            info[handle] = {"display": display, "rank": "(verborgen)", "roles": []}
+            nick = (row.get("discord_nickname_manual") or "").strip()
+            if nick:
+                manual[handle] = nick
+    return info, manual
 
 
 def load_state() -> dict:
@@ -508,6 +532,26 @@ def main() -> int:
         return 1
 
     discord_members = fetch_discord_members()
+
+    # Mitglieder mit verborgener Org-Zugehoerigkeit von Hand einmischen -
+    # die tauchen NIE in der Live-API auf, sollen aber trotzdem ganz normal
+    # in Liste, Tabelle und Rollenvergabe mitlaufen.
+    hidden_info, hidden_manual = load_hidden_members()
+    for handle, info in hidden_info.items():
+        if handle in rsi_members:
+            print(
+                f"Hinweis: '{handle}' steht in data/hidden_members.csv, "
+                f"taucht aber jetzt auch ganz normal in der Live-Abfrage auf "
+                f"(Person hat ihre Sichtbarkeit vermutlich geaendert). Die "
+                f"Live-Daten werden bevorzugt, der Eintrag in "
+                f"hidden_members.csv kann jetzt entfernt werden, ist aber "
+                f"unschaedlich, falls er stehen bleibt.",
+            )
+            continue
+        rsi_members[handle] = info
+    manual_nicknames.update(
+        {h: n for h, n in hidden_manual.items() if h not in manual_nicknames}
+    )
 
     # Discord-Konten, die schon eindeutig manuell zugeordnet sind, fliegen
     # aus dem Vorschlagspool - derselbe Discord-Account soll nicht gleichzeitig
