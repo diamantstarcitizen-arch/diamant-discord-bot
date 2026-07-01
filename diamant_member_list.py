@@ -391,7 +391,8 @@ def build_embed(total, joined, left, linked_count, open_count, reported_total=No
         "title": "📋 DIAMANT Mitgliederliste",
         "description": (
             f"Stand: {now}\nVollständige Liste in `data/members.csv` im Repo.\n"
-            f"Noch offene Vorschläge (unbestätigt) in der Tabelle unten ⬇️"
+            f"Noch offene Vorschläge (unbestätigt) in der Tabelle unten ⬇️\n"
+            f"🔗 [GitHub Bot](https://github.com/diamantstarcitizen-arch/diamant-discord-bot)"
         ),
         "color": 0x4DABF7,
         "fields": fields,
@@ -409,7 +410,9 @@ def build_linked_rows(rsi_members: dict, manual_nicknames: dict, suggestions: di
             continue  # schon geklaert - nicht mehr "offen"
         if handle in suggestions:
             s = suggestions[handle]
-            rows.append((handle, s["name"], f"~{round_to_5(s['match'])}% Vorschlag"))
+            pct = round_to_5(s["match"])
+            label = "<----<<" if pct >= 90 else f"~{pct}% Vorschlag"
+            rows.append((handle, s["name"], label))
     return rows
 
 
